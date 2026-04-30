@@ -46,51 +46,46 @@ async def create_scan(payload: ScanCreateRequest, session: AsyncSession = Depend
     logger.info(f"Received scan request for {payload.target_url}")
     
     try:
-        # ✅ FIX: Генерируем UUID вручную ДО создания объектов
         scan_id = uuid4()
-        
-        # Создаём scan с явным id
         scan = ScanORM(
             id=scan_id,
-            target_url=str(payload.target_url).rstrip('/'),  # Normalize URL
+            target_url=str(payload.target_url).rstrip('/'),
             config={"tools": payload.tools, "auth_session_id": str(payload.auth_session_id) if payload.auth_session_id else None}
         )
         session.add(scan)
-        
-        # ✅ FIX: flush() после parent, но до children — гарантирует доступность scan.id
         await session.flush()
-        
-        # Создаём steps с гарантированно заполненным scan_id
+
         for tool in payload.tools:
-            step = ScanStepORM(
-                scan_id=scan.id,
-                tool=tool,
-                status=ScanStatus.pending
-            )
+            step = ScanStepORM(scan_id=scan.id, tool=tool, status=ScanStatus.pending)
             session.add(step)
         
-        # Финальный коммит
         await session.commit()
+        await session.refresh(scan, [ScanORM.steps])
         
-        # ✅ FIX: refresh с ИМЕНАМИ атрибутов как строки (или убрать совсем)
-        # После commit() объекты уже содержат актуальные данные
-        # Если нужен refresh — используем строки:
-        # await session.refresh(scan, ["steps"])
-        # Но проще — загрузить явно через запрос:
-        stmt = select(ScanORM).options(selectinload(ScanORM.steps)).where(ScanORM.id == scan_id)
-        result = await session.execute(stmt)
-        scan = result.scalars().first()
+        # 🚀 ЗАПУСК ПЕРВОГО ЭТАПА ПЛАЙПЛАЙНА
+        # Если запрошен Katana, отправляем задачу на краулинг
+        # В будущем здесь может быть более сложный планировщик
+        if "katana" in payload.tools:
+            await publisher.publish("scan.crawl.katana", {
+                "event": "scan.crawl.katana",
+                "scan_id": str(scan.id),
+                "target": str(payload.target_url).rstrip('/'),
+                "auth_session_id": str(payload.auth_session_id) if payload.auth_session_id else None,
+                "tools_remaining": [t for t in payload.tools if t != "katana"]
+            })
+            logger.info(f"Published scan.crawl.katana for scan {scan.id}")
+        elif "nuclei" in payload.tools:
+            # Если Katana не нужна, сразу сканируем ядром
+            await publisher.publish("scan.dast.nuclei", {
+                "event": "scan.dast.nuclei",
+                "scan_id": str(scan.id),
+                "target": str(payload.target_url).rstrip('/'),
+                "auth_session_id": str(payload.auth_session_id) if payload.auth_session_id else None,
+                "tools_remaining": [t for t in payload.tools if t != "nuclei"]
+            })
+            logger.info(f"Published scan.dast.nuclei for scan {scan.id}")
         
-        # Публикуем событие в RabbitMQ
-        await publisher.publish("scan.created", {
-            "event": "scan.created",
-            "scan_id": str(scan.id),
-            "target_url": scan.target_url,
-            "tools": payload.tools,
-            "auth_session_id": payload.auth_session_id
-        })
-        
-        logger.info(f"Scan {scan.id} created and queued for execution.")
+        logger.info(f"Scan {scan.id} created and pipeline initiated.")
         return scan
         
     except Exception as e:

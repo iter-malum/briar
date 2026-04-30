@@ -50,6 +50,7 @@ class ScanORM(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=text("now()"))
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=text("now()"), onupdate=text("now()"))
     config: Mapped[Dict[str, Any]] = mapped_column(JSON, default=dict, nullable=False)
+    results: Mapped[List["ScanResultORM"]] = relationship("ScanResultORM", back_populates="scan", lazy="selectin")
     
     # ✅ FIX: cascade и lazy loading для корректной загрузки steps
     steps: Mapped[List["ScanStepORM"]] = relationship(
@@ -70,3 +71,27 @@ class ScanStepORM(Base):
     finished_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True), nullable=True)
     
     scan: Mapped["ScanORM"] = relationship("ScanORM", back_populates="steps")
+
+from sqlalchemy import Enum as SAEnum
+
+class SeverityLevel(str, enum.Enum):
+    low = "low"
+    medium = "medium"
+    high = "high"
+    critical = "critical"
+    info = "info"
+
+class ScanResultORM(Base):
+    __tablename__ = "scan_results"
+    
+    id: Mapped[UUID] = mapped_column(PG_UUID(as_uuid=True), primary_key=True, default=uuid4)
+    scan_id: Mapped[UUID] = mapped_column(PG_UUID(as_uuid=True), ForeignKey("scans.id"), nullable=False)
+    tool: Mapped[str] = mapped_column(String(50), nullable=False)
+    
+    severity: Mapped[SeverityLevel] = mapped_column(SAEnum(SeverityLevel), default=SeverityLevel.info)
+    url: Mapped[str] = mapped_column(String(2048), nullable=True)
+    vulnerability_type: Mapped[str] = mapped_column(String(100), nullable=True) # e.g., "XSS", "SQLi"
+    description: Mapped[str] = mapped_column(String(4096), nullable=True)
+    raw_output: Mapped[Dict[str, Any]] = mapped_column(JSON, default=dict)
+    
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=text("now()"))
