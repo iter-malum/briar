@@ -52,7 +52,10 @@ async def gateway_middleware(request: Request, call_next):
     await verify_token(request)
 
     # Proxy to Orchestrator
-    target_path = request.url.path.replace("/api/v1", "/api/v1", 1)
+    target_path = request.url.path
+    if target_path.startswith("/api/v1"):
+        target_path = target_path.replace("/api/v1", "", 1) or "/"
+    
     target_url = f"{settings.ORCHESTRATOR_URL}{target_path}"
     if request.url.query:
         target_url += f"?{request.url.query}"
@@ -68,13 +71,26 @@ async def gateway_middleware(request: Request, call_next):
                 headers=headers,
                 content=body,
             )
-        return JSONResponse(status_code=resp.status_code, content=resp.json())
+        
+        # Handle JSON and non-JSON responses gracefully
+        content_type = resp.headers.get("content-type", "")
+        if "application/json" in content_type:
+            try:
+                return JSONResponse(status_code=resp.status_code, content=resp.json())
+            except Exception:
+                pass
+        
+        return JSONResponse(
+            status_code=resp.status_code,
+            content={"detail": resp.text or "Upstream error"}
+        )
+        
     except httpx.RequestError as e:
         logger.error(f"Proxy error to {target_url}: {e}")
-        return JSONResponse(status_code=502, content={"detail": "Upstream service unreachable"})
+        return JSONResponse(status_code=502, content={"detail": f"Upstream unreachable: {str(e)}"})
     except Exception as e:
-        logger.error(f"Unexpected gateway error: {e}")
-        return JSONResponse(status_code=500, content={"detail": "Internal Gateway Error"})
+        logger.error(f"Unexpected gateway error: {e}", exc_info=True)
+        return JSONResponse(status_code=500, content={"detail": f"Gateway error: {str(e)}"})
 
 @app.get("/health")
 async def health():

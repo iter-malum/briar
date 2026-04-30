@@ -1,13 +1,16 @@
+# FILE: shared/models.py (FULLY FIXED for SQLAlchemy 2.x + asyncpg)
 from pydantic import BaseModel, Field, HttpUrl, ConfigDict
 from typing import List, Optional, Dict, Any
 from datetime import datetime
-from uuid import UUID
+from uuid import UUID, uuid4
 from sqlalchemy.orm import DeclarativeBase, relationship, Mapped, mapped_column
-from sqlalchemy import Column, String, DateTime, JSON, Enum as SAEnum, ForeignKey, func
+from sqlalchemy import Column, String, DateTime, JSON, Enum as SAEnum, ForeignKey, func, text
 from sqlalchemy.dialects.postgresql import UUID as PG_UUID
 import enum
 
-Base = DeclarativeBase
+# ✅ Proper SQLAlchemy 2.x base
+class Base(DeclarativeBase):
+    pass
 
 class ScanStatus(str, enum.Enum):
     pending = "pending"
@@ -26,7 +29,7 @@ class ScanCreateRequest(BaseModel):
     model_config = ConfigDict(json_schema_extra={"example": {"target_url": "https://example.com", "auth_session_id": None, "tools": ["katana", "nuclei"]}})
     target_url: HttpUrl
     auth_session_id: Optional[UUID] = None
-    tools: List[str] = Field(default=["katana", "nuclei"])
+    tools: List[str] = Field(default_factory=lambda: ["katana", "nuclei"], min_length=1)
 
 class ScanResponse(BaseModel):
     id: UUID
@@ -37,23 +40,33 @@ class ScanResponse(BaseModel):
     config: Dict[str, Any]
     steps: List[ScanStepResponse]
 
-# SQLAlchemy ORM Models
+# SQLAlchemy ORM Models - ✅ FIXED UUID generation
 class ScanORM(Base):
     __tablename__ = "scans"
-    id = Column(PG_UUID(as_uuid=True), primary_key=True, default=func.gen_random_uuid)
-    target_url = Column(String(2048), nullable=False)
-    status = Column(SAEnum(ScanStatus), default=ScanStatus.pending)
-    created_at = Column(DateTime(timezone=True), server_default=func.now())
-    updated_at = Column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())
-    config = Column(JSON, default=dict, nullable=False)
-    steps = relationship("ScanStepORM", back_populates="scan", lazy="selectin")
+    
+    id: Mapped[UUID] = mapped_column(PG_UUID(as_uuid=True), primary_key=True, default=uuid4)
+    target_url: Mapped[str] = mapped_column(String(2048), nullable=False)
+    status: Mapped[ScanStatus] = mapped_column(SAEnum(ScanStatus), default=ScanStatus.pending)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=text("now()"))
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=text("now()"), onupdate=text("now()"))
+    config: Mapped[Dict[str, Any]] = mapped_column(JSON, default=dict, nullable=False)
+    
+    # ✅ FIX: cascade и lazy loading для корректной загрузки steps
+    steps: Mapped[List["ScanStepORM"]] = relationship(
+        "ScanStepORM", 
+        back_populates="scan", 
+        lazy="selectin",  # Eager load via JOIN
+        cascade="all, delete-orphan"
+    )
 
 class ScanStepORM(Base):
     __tablename__ = "scan_steps"
-    id = Column(PG_UUID(as_uuid=True), primary_key=True, default=func.gen_random_uuid)
-    scan_id = Column(PG_UUID(as_uuid=True), ForeignKey("scans.id"), nullable=False)
-    tool = Column(String(50), nullable=False)
-    status = Column(SAEnum(ScanStatus), default=ScanStatus.pending)
-    started_at = Column(DateTime(timezone=True), nullable=True)
-    finished_at = Column(DateTime(timezone=True), nullable=True)
-    scan = relationship("ScanORM", back_populates="steps")
+    
+    id: Mapped[UUID] = mapped_column(PG_UUID(as_uuid=True), primary_key=True, default=uuid4)
+    scan_id: Mapped[UUID] = mapped_column(PG_UUID(as_uuid=True), ForeignKey("scans.id"), nullable=False)
+    tool: Mapped[str] = mapped_column(String(50), nullable=False)
+    status: Mapped[ScanStatus] = mapped_column(SAEnum(ScanStatus), default=ScanStatus.pending)
+    started_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True), nullable=True)
+    finished_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True), nullable=True)
+    
+    scan: Mapped["ScanORM"] = relationship("ScanORM", back_populates="steps")

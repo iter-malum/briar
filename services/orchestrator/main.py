@@ -1,11 +1,15 @@
+# FILE: services/orchestrator/main.py (FULLY FIXED)
 import sys
 import os
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), "../../")))
 
-from fastapi import FastAPI, Depends, HTTPException, BackgroundTasks
+from fastapi import FastAPI, Depends, HTTPException
 from sqlalchemy.ext.asyncio import create_async_engine, AsyncSession, async_sessionmaker
 from sqlalchemy.orm import selectinload
 from sqlalchemy import select
+from uuid import uuid4
+import json
+
 from shared.config import settings
 from shared.models import Base, ScanORM, ScanStepORM, ScanStatus, ScanCreateRequest, ScanResponse
 from shared.rabbitmq import RabbitMQPublisher
@@ -41,40 +45,73 @@ async def get_db():
 async def create_scan(payload: ScanCreateRequest, session: AsyncSession = Depends(get_db)):
     logger.info(f"Received scan request for {payload.target_url}")
     
-    scan = ScanORM(
-        target_url=str(payload.target_url),
-        config={"tools": payload.tools, "auth_session_id": str(payload.auth_session_id) if payload.auth_session_id else None}
-    )
-    session.add(scan)
-    await session.flush()
-
-    for tool in payload.tools:
-        step = ScanStepORM(scan_id=scan.id, tool=tool, status=ScanStatus.pending)
-        session.add(step)
-    
-    await session.commit()
-    await session.refresh(scan, [ScanORM.steps])
-
-    # Publish event to RabbitMQ
-    await publisher.publish("scan.created", {
-        "event": "scan.created",
-        "scan_id": str(scan.id),
-        "target_url": scan.target_url,
-        "tools": payload.tools,
-        "auth_session_id": payload.auth_session_id
-    })
-    
-    logger.info(f"Scan {scan.id} created and queued for execution.")
-    return scan
+    try:
+        # ✅ FIX: Генерируем UUID вручную ДО создания объектов
+        scan_id = uuid4()
+        
+        # Создаём scan с явным id
+        scan = ScanORM(
+            id=scan_id,
+            target_url=str(payload.target_url).rstrip('/'),  # Normalize URL
+            config={"tools": payload.tools, "auth_session_id": str(payload.auth_session_id) if payload.auth_session_id else None}
+        )
+        session.add(scan)
+        
+        # ✅ FIX: flush() после parent, но до children — гарантирует доступность scan.id
+        await session.flush()
+        
+        # Создаём steps с гарантированно заполненным scan_id
+        for tool in payload.tools:
+            step = ScanStepORM(
+                scan_id=scan.id,
+                tool=tool,
+                status=ScanStatus.pending
+            )
+            session.add(step)
+        
+        # Финальный коммит
+        await session.commit()
+        
+        # ✅ FIX: refresh с ИМЕНАМИ атрибутов как строки (или убрать совсем)
+        # После commit() объекты уже содержат актуальные данные
+        # Если нужен refresh — используем строки:
+        # await session.refresh(scan, ["steps"])
+        # Но проще — загрузить явно через запрос:
+        stmt = select(ScanORM).options(selectinload(ScanORM.steps)).where(ScanORM.id == scan_id)
+        result = await session.execute(stmt)
+        scan = result.scalars().first()
+        
+        # Публикуем событие в RabbitMQ
+        await publisher.publish("scan.created", {
+            "event": "scan.created",
+            "scan_id": str(scan.id),
+            "target_url": scan.target_url,
+            "tools": payload.tools,
+            "auth_session_id": payload.auth_session_id
+        })
+        
+        logger.info(f"Scan {scan.id} created and queued for execution.")
+        return scan
+        
+    except Exception as e:
+        await session.rollback()
+        logger.error(f"Failed to create scan: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=f"Scan creation failed: {str(e)}")
 
 @app.get("/scans/{scan_id}", response_model=ScanResponse)
 async def get_scan(scan_id: str, session: AsyncSession = Depends(get_db)):
-    stmt = select(ScanORM).options(selectinload(ScanORM.steps)).where(ScanORM.id == scan_id)
-    res = await session.execute(stmt)
-    scan = res.scalars().first()
-    if not scan:
-        raise HTTPException(status_code=404, detail="Scan not found")
-    return scan
+    try:
+        stmt = select(ScanORM).options(selectinload(ScanORM.steps)).where(ScanORM.id == scan_id)
+        res = await session.execute(stmt)
+        scan = res.scalars().first()
+        if not scan:
+            raise HTTPException(status_code=404, detail="Scan not found")
+        return scan
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Failed to get scan {scan_id}: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=f"Failed to retrieve scan: {str(e)}")
 
 @app.get("/health")
 async def healthcheck():
