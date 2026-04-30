@@ -1,0 +1,84 @@
+version: '3.8'
+
+services:
+  postgres:
+    image: postgres:15-alpine
+    container_name: briar-postgres
+    environment:
+      POSTGRES_USER: briar
+      POSTGRES_PASSWORD: secure_password_change_me
+      POSTGRES_DB: briar_db
+    ports:
+      - "5432:5432"
+    volumes:
+      - pg_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U briar -d briar_db"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+    networks:
+      - briar-net
+
+  rabbitmq:
+    image: rabbitmq:3.12-management-alpine
+    container_name: briar-rabbitmq
+    environment:
+      RABBITMQ_DEFAULT_USER: guest
+      RABBITMQ_DEFAULT_PASS: guest
+    ports:
+      - "5672:5672"
+      - "15672:15672"
+    healthcheck:
+      test: ["CMD", "rabbitmq-diagnostics", "check_port_connectivity"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+    networks:
+      - briar-net
+
+  orchestrator:
+    build:
+      context: .
+      dockerfile: services/orchestrator/Dockerfile
+    container_name: briar-orchestrator
+    depends_on:
+      postgres: { condition: service_healthy }
+      rabbitmq: { condition: service_healthy }
+    environment:
+      DB_USER: briar
+      DB_PASSWORD: secure_password_change_me
+      DB_HOST: postgres
+      DB_PORT: "5432"
+      DB_NAME: briar_db
+      RABBITMQ_HOST: rabbitmq
+      RABBITMQ_PORT: "5672"
+      RABBITMQ_USER: guest
+      RABBITMQ_PASS: guest
+    ports:
+      - "8001:8000"
+    networks:
+      - briar-net
+
+  gateway:
+    build:
+      context: .
+      dockerfile: services/gateway/Dockerfile
+    container_name: briar-gateway
+    depends_on:
+      orchestrator: { condition: service_started }
+    environment:
+      ORCHESTRATOR_URL: http://orchestrator:8000
+      JWT_SECRET: super_secret_key_for_development_only
+      JWT_ALGORITHM: HS256
+    ports:
+      - "8000:8000"
+    networks:
+      - briar-net
+
+volumes:
+  pg_data:
+
+networks:
+  briar-net:
+    driver: bridge
