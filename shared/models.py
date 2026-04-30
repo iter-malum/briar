@@ -1,14 +1,12 @@
-# FILE: shared/models.py (FULLY FIXED for SQLAlchemy 2.x + asyncpg)
 from pydantic import BaseModel, Field, HttpUrl, ConfigDict
 from typing import List, Optional, Dict, Any
 from datetime import datetime
 from uuid import UUID, uuid4
 from sqlalchemy.orm import DeclarativeBase, relationship, Mapped, mapped_column
-from sqlalchemy import Column, String, DateTime, JSON, Enum as SAEnum, ForeignKey, func, text
+from sqlalchemy import Column, String, DateTime, JSON, Enum as SAEnum, ForeignKey, text
 from sqlalchemy.dialects.postgresql import UUID as PG_UUID
 import enum
 
-# ✅ Proper SQLAlchemy 2.x base
 class Base(DeclarativeBase):
     pass
 
@@ -18,7 +16,14 @@ class ScanStatus(str, enum.Enum):
     completed = "completed"
     failed = "failed"
 
-# Pydantic v2 Models
+class SeverityLevel(str, enum.Enum):
+    low = "low"
+    medium = "medium"
+    high = "high"
+    critical = "critical"
+    info = "info"
+
+# Pydantic Models
 class ScanStepResponse(BaseModel):
     tool: str
     status: str
@@ -40,7 +45,18 @@ class ScanResponse(BaseModel):
     config: Dict[str, Any]
     steps: List[ScanStepResponse]
 
-# SQLAlchemy ORM Models - ✅ FIXED UUID generation
+class ScanResultResponse(BaseModel):
+    id: UUID
+    scan_id: UUID
+    tool: str
+    severity: str
+    url: Optional[str] = None
+    vulnerability_type: Optional[str] = None
+    description: Optional[str] = None
+    raw_output: Dict[str, Any] = {}
+    created_at: datetime
+
+# ORM Models
 class ScanORM(Base):
     __tablename__ = "scans"
     
@@ -50,15 +66,9 @@ class ScanORM(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=text("now()"))
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=text("now()"), onupdate=text("now()"))
     config: Mapped[Dict[str, Any]] = mapped_column(JSON, default=dict, nullable=False)
-    results: Mapped[List["ScanResultORM"]] = relationship("ScanResultORM", back_populates="scan", lazy="selectin")
     
-    # ✅ FIX: cascade и lazy loading для корректной загрузки steps
-    steps: Mapped[List["ScanStepORM"]] = relationship(
-        "ScanStepORM", 
-        back_populates="scan", 
-        lazy="selectin",  # Eager load via JOIN
-        cascade="all, delete-orphan"
-    )
+    steps: Mapped[List["ScanStepORM"]] = relationship("ScanStepORM", back_populates="scan", lazy="selectin", cascade="all, delete-orphan")
+    results: Mapped[List["ScanResultORM"]] = relationship("ScanResultORM", back_populates="scan", lazy="selectin", cascade="all, delete-orphan")
 
 class ScanStepORM(Base):
     __tablename__ = "scan_steps"
@@ -72,26 +82,17 @@ class ScanStepORM(Base):
     
     scan: Mapped["ScanORM"] = relationship("ScanORM", back_populates="steps")
 
-from sqlalchemy import Enum as SAEnum
-
-class SeverityLevel(str, enum.Enum):
-    low = "low"
-    medium = "medium"
-    high = "high"
-    critical = "critical"
-    info = "info"
-
 class ScanResultORM(Base):
     __tablename__ = "scan_results"
     
     id: Mapped[UUID] = mapped_column(PG_UUID(as_uuid=True), primary_key=True, default=uuid4)
     scan_id: Mapped[UUID] = mapped_column(PG_UUID(as_uuid=True), ForeignKey("scans.id"), nullable=False)
     tool: Mapped[str] = mapped_column(String(50), nullable=False)
-    
     severity: Mapped[SeverityLevel] = mapped_column(SAEnum(SeverityLevel), default=SeverityLevel.info)
     url: Mapped[str] = mapped_column(String(2048), nullable=True)
-    vulnerability_type: Mapped[str] = mapped_column(String(100), nullable=True) # e.g., "XSS", "SQLi"
+    vulnerability_type: Mapped[str] = mapped_column(String(100), nullable=True)
     description: Mapped[str] = mapped_column(String(4096), nullable=True)
     raw_output: Mapped[Dict[str, Any]] = mapped_column(JSON, default=dict)
-    
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=text("now()"))
+    
+    scan: Mapped["ScanORM"] = relationship("ScanORM", back_populates="results")

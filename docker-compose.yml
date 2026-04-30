@@ -109,15 +109,146 @@ services:
       resources:
         limits:
           memory: 2G
-    volumes:
-      - playwright_cache:/ms-playwright
     networks:
       - briar-net
+
+  # === SCANNER WORKERS ===
+  
+  worker-katana:
+    build:
+      context: .
+      dockerfile: services/worker-katana/Dockerfile
+    container_name: briar-worker-katana
+    depends_on:
+      rabbitmq: { condition: service_healthy }
+      postgres: { condition: service_healthy }
+    environment:
+      RABBITMQ_HOST: rabbitmq
+      RABBITMQ_PORT: "5672"
+      RABBITMQ_USER: guest
+      RABBITMQ_PASS: guest
+      DB_USER: briar
+      DB_PASSWORD: secure_password_change_me
+      DB_HOST: postgres
+      DB_PORT: "5432"
+      DB_NAME: briar_db
+      AUTH_SERVICE_URL: http://auth-service:8000
+      KATANA_TIMEOUT: "600"
+      KATANA_DEPTH: "3"
+      KATANA_CONCURRENCY: "10"
+    networks:
+      - briar-net
+    restart: unless-stopped
+
+  worker-nuclei:
+    build:
+      context: .
+      dockerfile: services/worker-nuclei/Dockerfile
+    container_name: briar-worker-nuclei
+    depends_on:
+      rabbitmq: { condition: service_healthy }
+      postgres: { condition: service_healthy }
+    environment:
+      RABBITMQ_HOST: rabbitmq
+      RABBITMQ_PORT: "5672"
+      RABBITMQ_USER: guest
+      RABBITMQ_PASS: guest
+      DB_USER: briar
+      DB_PASSWORD: secure_password_change_me
+      DB_HOST: postgres
+      DB_PORT: "5432"
+      DB_NAME: briar_db
+      AUTH_SERVICE_URL: http://auth-service:8000
+      NUCLEI_TIMEOUT: "1800"
+      NUCLEI_RATE_LIMIT: "100"
+      NUCLEI_CONCURRENCY: "25"
+    networks:
+      - briar-net
+    restart: unless-stopped
+
+  worker-ffuf:
+    build:
+      context: .
+      dockerfile: services/worker-ffuf/Dockerfile
+    container_name: briar-worker-ffuf
+    depends_on:
+      rabbitmq: { condition: service_healthy }
+      postgres: { condition: service_healthy }
+    environment:
+      RABBITMQ_HOST: rabbitmq
+      RABBITMQ_PORT: "5672"
+      RABBITMQ_USER: guest
+      RABBITMQ_PASS: guest
+      DB_USER: briar
+      DB_PASSWORD: secure_password_change_me
+      DB_HOST: postgres
+      DB_PORT: "5432"
+      DB_NAME: briar_db
+      AUTH_SERVICE_URL: http://auth-service:8000
+      FFUF_TIMEOUT: "1200"
+      FFUF_RATE: "1000"
+      FFUF_THREADS: "40"
+      FFUF_WORDLIST: "/usr/share/seclists/Discovery/Web-Content/common.txt"
+    networks:
+      - briar-net
+    restart: unless-stopped
+
+  worker-zap:
+    build:
+      context: .
+      dockerfile: services/worker-zap/Dockerfile
+    container_name: briar-worker-zap
+    depends_on:
+      rabbitmq: { condition: service_healthy }
+      postgres: { condition: service_healthy }
+    environment:
+      RABBITMQ_HOST: rabbitmq
+      RABBITMQ_PORT: "5672"
+      RABBITMQ_USER: guest
+      RABBITMQ_PASS: guest
+      DB_USER: briar
+      DB_PASSWORD: secure_password_change_me
+      DB_HOST: postgres
+      DB_PORT: "5432"
+      DB_NAME: briar_db
+      AUTH_SERVICE_URL: http://auth-service:8000
+      ZAP_TIMEOUT: "3600"
+      ZAP_PORT: "8090"
+      ZAP_API_KEY: "briar-zap-api-key-2024"
+      ZAP_MAX_DURATION: "30"
+    networks:
+      - briar-net
+    restart: unless-stopped
+
+  worker-httpx:
+    build:
+      context: .
+      dockerfile: services/worker-httpx/Dockerfile
+    container_name: briar-worker-httpx
+    depends_on:
+      rabbitmq: { condition: service_healthy }
+      postgres: { condition: service_healthy }
+    environment:
+      RABBITMQ_HOST: rabbitmq
+      RABBITMQ_PORT: "5672"
+      RABBITMQ_USER: guest
+      RABBITMQ_PASS: guest
+      DB_USER: briar
+      DB_PASSWORD: secure_password_change_me
+      DB_HOST: postgres
+      DB_PORT: "5432"
+      DB_NAME: briar_db
+      AUTH_SERVICE_URL: http://auth-service:8000
+      HTTPX_TIMEOUT: "600"
+      HTTPX_THREADS: "50"
+      HTTPX_RATE_LIMIT: "200"
+    networks:
+      - briar-net
+    restart: unless-stopped
 
 volumes:
   pg_data:
   redis_data:
-  playwright_cache:
 
 networks:
   briar-net:
